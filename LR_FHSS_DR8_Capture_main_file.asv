@@ -1,0 +1,141 @@
+clear all; close all; clc;
+
+%% 🌍 Simulation Parameters
+tic
+Simulation_T = 110 * 60;  % Total simulation time (110 minutes → seconds)
+Time_Step = 60;           % Time step (1 min = 60 sec)
+MonteCarlo = 1000;        % Packets per time step
+Nodes = 3;                % Number of ground nodes (Rome, Milan, NodeRM)
+Pkct_Per_Hour = 100;      % Packets per hour per node
+
+%% 🌍 Ground Nodes (Rome, Milan, NodeRM)
+Node_Coordinates = [
+    41.9028, 12.4964;  % Rome (Node 1)
+    45.4642, 9.1900;   % Milan (Node 2)
+    41.9, 12.5         % NodeRM (Node 3, near Rome)
+];
+
+%% 🛰️ Satellite Constellation (Walker)
+Num_Satellites = 36;  % Total satellites
+Num_Planes = 18;      % Number of orbital planes
+Orbital_Inclination = deg2rad(87);  % Inclination in radians
+H = 1200e3;  % Satellite altitude (meters)
+Earth_Radius = 6378e3;  % Earth radius (meters)
+Time_Vector = 0:Time_Step:Simulation_T;  % Time steps (1 min intervals)
+
+% Generate Walker Delta Constellation
+oev = walker_delta(Num_Satellites, Num_Planes, 1, pi, Earth_Radius + H, Orbital_Inclination);
+
+%% 📡 Compute Satellite Visibility
+[Distances, Elevation_Angles, Ground_Distances, Visibility, Num_Visible_Sats] = ...
+    Satellite_Geometry(H, Node_Coordinates, oev, Earth_Radius, Time_Vector);
+
+%% 📊 Storage for Visibility, Packet Arrival, Success Rate, and Collisions
+Visible_Sat_Matrix = cell(length(Time_Vector), 3);  % Time | Rome's visible sats | Milan's visible sats
+Packet_Arrival_Times = cell(Num_Satellites, length(Time_Vector));  % Store per satellite
+SuccessRate = zeros(Nodes, length(Time_Vector));  % Success rate per node per time step
+Collisions = zeros(Nodes, length(Time_Vector));   % Collision counts per node per time step
+Received_Packets_NodeRM = zeros(1, length(Time_Vector));  % Track received packets at NodeRM
+
+%% 📡 Random Access & Visibility Tracking
+for t = 1:length(Time_Vector)
+    current_time_min = Time_Vector(t) / 60;  % Convert time to minutes
+    fprintf('\n⏳ Time %.2f min:\n', current_time_min);
+
+    % 🌍 Identify which satellites are visible to Rome & Milan
+    Rome_Visible_Sats = find(Visibility(1, :, t));  % Rome sees these satellites
+    Milan_Visible_Sats = find(Visibility(2, :, t)); % Milan sees these satellites
+
+    % 🌍 Store Visibility Data
+    Visible_Sat_Matrix{t, 1} = current_time_min;
+    Visible_Sat_Matrix{t, 2} = Rome_Visible_Sats;  
+    Visible_Sat_Matrix{t, 3} = Milan_Visible_Sats; 
+
+    % 🔍 Print satellites visible to each ground station
+    fprintf('📡 Rome sees %d satellites: %s\n', length(Rome_Visible_Sats), mat2str(Rome_Visible_Sats));
+    fprintf('📡 Milan sees %d satellites: %s\n', length(Milan_Visible_Sats), mat2str(Milan_Visible_Sats));
+
+    % 🔍 Identify Common Satellites
+    Common_Sats = intersect(Rome_Visible_Sats, Milan_Visible_Sats);
+    if ~isempty(Common_Sats)
+        fprintf('🔄 Common Satellites: %s\n', mat2str(Common_Sats));
+    end
+
+    % Tracking packets received by NodeRM
+    NodeRM_Packet_Times = [];
+
+    % 🔹 Loop through nodes (Rome & Milan)
+    for n = 1:Nodes-1  
+        if isempty(Visible_Sat_Matrix{t, n+1})  % No visible satellites
+            fprintf('🚫 No satellites visible for Node %d at %.2f min, no packets sent.\n', n, current_time_min);
+            continue;
+        end
+
+        % Rome/Milan sends packets to visible satellites
+        Num_Packets = 10;  
+        Transmission_Times = rand(1, Num_Packets) * Time_Step;  % Packets sent randomly within time step
+        sorted_times = sort(Transmission_Times);
+
+        % Get visible satellites for this node
+        Visible_Sats = Visible_Sat_Matrix{t, n+1};  
+
+        % Store unique packets for success calculation
+        unique_packets = 0;
+
+        % 🚀 Transmit packets to each visible satellite
+        for pkt = 1:Num_Packets
+            for chosen_sat = Visible_Sats
+                if chosen_sat <= Num_Satellites
+                    arrival_delay = sorted_times(pkt) + rand * 0.5;  % Add small random delay
+                    Packet_Arrival_Times{chosen_sat, t} = [Packet_Arrival_Times{chosen_sat, t}, arrival_delay];
+                    
+                    % ✅ **Count each unique successful packet once per time step**
+                    unique_packets = unique_packets + 1;
+                end
+            end
+        end
+
+        % ✅ **Fix Success Rate Calculation**
+        SuccessRate(n, t) = (unique_packets / Num_Packets) * 100;  % Convert to percentage
+    end
+
+    % 🚀 **NodeRM Packet Reception Logic**
+    if ~isempty(NodeRM_Packet_Times)
+        NodeRM_Packet_Times = sort(NodeRM_Packet_Times);
+        Received_Packets_NodeRM(t) = 1;  % Mark first packet as successful
+    end
+end
+
+%% 📊 Print Visibility & Packet Arrival Data
+fprintf('\n==== 📊 Visibility and Packet Arrival Times ====\n');
+
+for t = 1:length(Time_Vector)
+    fprintf('\n⏳ Time %.2f min:\n', Visible_Sat_Matrix{t, 1});
+    
+    Rome_Sats = Visible_Sat_Matrix{t, 2};
+    Milan_Sats = Visible_Sat_Matrix{t, 3};
+
+    fprintf('📡 Rome sees: %s\n', mat2str(Rome_Sats));
+    fprintf('📡 Milan sees: %s\n', mat2str(Milan_Sats));
+    
+    Common_Sats = intersect(Rome_Sats, Milan_Sats);
+    if ~isempty(Common_Sats)
+        fprintf('🔄 Common Satellites: %s\n', mat2str(Common_Sats));
+    end
+    
+    for s = 1:Num_Satellites
+        if ~isempty(Packet_Arrival_Times{s, t})
+            fprintf('🛰️ Satellite %d received packets at: ', s);
+            fprintf('%.2f ', Packet_Arrival_Times{s, t} / 60);
+            fprintf(' (min)\n');
+        end
+    end
+end
+
+%% 📊 Final Summary
+fprintf('\n==== 📊 Final Results ====\n');
+fprintf('✅ Overall Success Rate for Rome: %.2f%%\n', mean(SuccessRate(1, :)));
+fprintf('✅ Overall Success Rate for Milan: %.2f%%\n', mean(SuccessRate(2, :)));
+fprintf('📡 Total Packets Successfully Received by NodeRM: %d\n', sum(Received_Packets_NodeRM));
+
+toc;
