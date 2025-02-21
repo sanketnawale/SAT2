@@ -27,7 +27,7 @@ Time_Vector = 0:Time_Step:Simulation_T; % Time simulation vector
 oev = walker_delta(Num_Satellites, Num_Planes, 1, pi, Earth_Radius + H, Orbital_Inclination);
 
 %% 📡 Call Updated Satellite Geometry Function
-[Distances, Elevation_Angles, Ground_Distances, Visibility, Num_Visible_Sats] = ...
+[Distances, Elevation_Angles, Ground_Distances, Visibility, Num_Visible_Sats, Sat_IDs] = ...
     Satellite_Geometry(H, Node_Coordinates, oev, Earth_Radius, Time_Vector);
 
 %% 📊 Initialize Satellite Visibility Matrix
@@ -51,8 +51,16 @@ for t = 1:length(Time_Vector)
     Visible_Sat_Matrix(t, :) = [current_time_min, Num_Visible_Sats(1, t), Num_Visible_Sats(2, t)];
 
     % Print visibility status
-    fprintf('📡 Rome sees %d satellites, Milan sees %d satellites\n', ...
-            Num_Visible_Sats(1, t), Num_Visible_Sats(2, t));
+    fprintf('📡 Rome sees %d satellites: %s\n', Num_Visible_Sats(1, t), mat2str(Sat_IDs{1, t}));
+    fprintf('📡 Milan sees %d satellites: %s\n', Num_Visible_Sats(2, t), mat2str(Sat_IDs{2, t}));
+    fprintf('📡 NodeRM sees %d satellites: %s\n', Num_Visible_Sats(3, t), mat2str(Sat_IDs{3, t}));
+
+
+    % 🔍 Identify Common Satellites
+    Common_Sats = intersect(Sat_IDs{1, t}, Sat_IDs{2, t});
+    if ~isempty(Common_Sats)
+        fprintf('🔄 Common Satellites seen by both: %s\n', mat2str(Common_Sats));
+    end
 
     % Tracking packets received by NodeRM
     NodeRM_Packet_Times = [];
@@ -65,12 +73,12 @@ for t = 1:length(Time_Vector)
         end
 
         % Rome sends multiple identical packets (10)
-        Num_Packets = 1000; 
+        Num_Packets = 100; 
         Transmission_Times = rand(1, Num_Packets) * Time_Step; % Packets randomly sent within time step
         sorted_times = sort(Transmission_Times);
 
         % Select visible satellites
-        Visible_Sats = find(Visibility(n, :, t));
+        Visible_Sats = Sat_IDs{n, t};
 
         % 🛑 **Check if any satellites are available**
         if isempty(Visible_Sats)
@@ -94,21 +102,26 @@ for t = 1:length(Time_Vector)
         end
 
         % 🔥 Check for Collisions at Each Satellite
+% 🔥 Check for Collisions at Each Satellite
         for s = 1:Num_Satellites
             if ~isempty(Sat_Receive_Times{s})
                 sat_tx_times = sort(Sat_Receive_Times{s});
 
-                % Detect collisions (packets arriving too close)
-                collisions = sum(diff(sat_tx_times) < 0.01);  % Collision if packets arrive within 10ms
-                total_packets = length(sat_tx_times);
+        % Detect collisions (packets arriving too close)
+            collisions = sum(diff(sat_tx_times) < 0.01);  % Collision if packets arrive within 10ms
+            total_packets = length(sat_tx_times);
+    
+        % Store results
+            Collisions(n, t) = collisions;  % Store number of collisions
+            SuccessRate(n, t) = total_packets - collisions;  % Only successful packets
 
-                % Store results
-                Collisions(n, t) = Collisions(n, t) + collisions; 
-                SuccessRate(n, t) = SuccessRate(n, t) + (total_packets - collisions);
-
-                % 🚀 If node is Rome, relay to NodeRM
-                if n == 1  % Rome transmits
-                    NodeRM_Packet_Times = [NodeRM_Packet_Times, sat_tx_times];
+             % ✅ **Fix the Relay Logic for NodeRM**
+                if n == 1  
+                % 🚀 Ensure we only take packets that were successfully received
+                    if SuccessRate(n, t) > 0
+                    successful_packets = sat_tx_times((collisions+1):end);  % Ensure valid range
+                    NodeRM_Packet_Times = [NodeRM_Packet_Times, successful_packets]; 
+                    end
                 end
             end
         end
@@ -118,10 +131,13 @@ for t = 1:length(Time_Vector)
     end
 
     % 🚀 **NodeRM Packet Reception Logic**
-    if ~isempty(NodeRM_Packet_Times)
-        NodeRM_Packet_Times = sort(NodeRM_Packet_Times);
+   % 🚀 **NodeRM Packet Reception Logic (Fixed)**
+if ~isempty(NodeRM_Packet_Times)
+    NodeRM_Packet_Times = sort(NodeRM_Packet_Times);
 
-        % ✅ **Fix: Only the first packet is received, others are lost due to collision**
+    % ✅ **Only accept packets from satellites visible to NodeRM**
+    NodeRM_Visible_Sats = Sat_IDs{3, t};  % Get visible satellites for NodeRM
+    if ~isempty(intersect(NodeRM_Visible_Sats, Sat_IDs{1, t}))  % Rome's satellites
         Received_Packets_NodeRM(t) = 1;  % Mark first packet as successful
         first_packet_time = NodeRM_Packet_Times(1);
 
@@ -133,8 +149,12 @@ for t = 1:length(Time_Vector)
             fprintf('📡 NodeRM successfully received a packet at %.2f min\n', first_packet_time / 60);
         end
     else
-        fprintf('📡 NodeRM Received No Packets at %.2f min (No successful relay).\n', current_time_min);
+        fprintf('📡 NodeRM Received No Packets at %.2f min (No successful relay, no visible satellites).\n', current_time_min);
     end
+else
+    fprintf('📡 NodeRM Received No Packets at %.2f min (No successful relay).\n', current_time_min);
+end
+
 end
 
 %% 📊 Print Satellite Visibility Matrix
